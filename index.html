@@ -541,7 +541,9 @@ function createMiniSupabase(url, key){
         if(op==='insert'||op==='update'||op==='upsert') prefer.push('return=representation');
         if(op==='upsert') prefer.push('resolution=merge-duplicates');
         if(prefer.length) headers['Prefer']=prefer.join(',');
-        if((single||maybe)) headers['Accept']='application/vnd.pgrst.object+json';
+        // Only use the single-object Accept header for GET selects, never for writes
+        // (it conflicts with return=representation on inserts/updates).
+        if((single||maybe) && op==='select') headers['Accept']='application/vnd.pgrst.object+json';
 
         const r = await fetch(buildUrl(), opts);
         if(!r.ok){
@@ -554,7 +556,7 @@ function createMiniSupabase(url, key){
         if(method==='DELETE') return {data:null,error:null};
         let data=null;
         const txt=await r.text();
-        if(txt) data=JSON.parse(txt);
+        if(txt){ try{ data=JSON.parse(txt); }catch(e){ data=null; } }
         if((single||maybe) && Array.isArray(data)) data = data[0]||null;
         return {data, error:null};
       }catch(e){
@@ -1076,7 +1078,8 @@ async function createCat(){
   if(!name){toast('Escribí el nombre');return;}
   closeModal('assignModal');
   const maxOrder=Math.max(0,...ST.shop.map(x=>x.sort_order||0));
-  await sb.from('shop_items').insert([{family_id:ST.family.id,is_category:true,cat_name:name,sort_order:maxOrder+1},{family_id:ST.family.id,is_category:false,name:'Nuevo producto',qty:'1 unidad',price:0,sort_order:maxOrder+2}]);
+  const {error}=await sb.from('shop_items').insert([{family_id:ST.family.id,is_category:true,cat_name:name,sort_order:maxOrder+1},{family_id:ST.family.id,is_category:false,name:'Nuevo producto',qty:'1 unidad',price:0,sort_order:maxOrder+2}]);
+  if(error){toast('Error: '+error.message);return;}
   await loadShop();renderShop();toast('✅ Categoría creada');
 }
 
