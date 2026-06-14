@@ -857,12 +857,14 @@ function openAssign(slotKey){
 
 async function assignRecipe(slotKey,rid){
   closeModal('assignModal');
-  const {data,error}=await sb.from('plan_entries').upsert({family_id:ST.family.id,date:ST.selDate,slot:slotKey,recipe_id:rid},{onConflict:'family_id,date,slot'}).select().maybeSingle();
-  if(error){toast('Error al guardar');return;}
+  const {error}=await sb.from('plan_entries').upsert({family_id:ST.family.id,date:ST.selDate,slot:slotKey,recipe_id:rid},{onConflict:'family_id,date,slot'});
+  if(error){toast('Error al guardar: '+error.message);return;}
   if(!ST.plan[ST.selDate])ST.plan[ST.selDate]={};
-  ST.plan[ST.selDate][slotKey]={id:data.id,recipe_id:rid};
+  // Re-fetch the id of the entry we just upserted
+  const {data:row}=await sb.from('plan_entries').select('id').eq('family_id',ST.family.id).eq('date',ST.selDate).eq('slot',slotKey).maybeSingle();
+  if(row)ST.plan[ST.selDate][slotKey]={id:row.id,recipe_id:rid};
   renderCalendar();
-  toast('✅ Agregado');
+  toast('✅ Agregado al menú');
 }
 
 // GENERATE MONTH
@@ -1023,7 +1025,7 @@ function renderShop(){
     if(it.is_category){
       html+=`<div class="shop-cat"><input value="${(it.cat_name||'').replace(/"/g,'&quot;')}" oninput="updateCatName('${it.id}',this.value)"><button onclick="rmCat('${it.id}')" style="background:rgba(255,255,255,.25);border:none;color:white;width:24px;height:24px;border-radius:50%;font-size:14px;cursor:pointer;flex-shrink:0;">×</button></div>`;
     } else {
-      html+=`<div class="shop-item"><div class="shop-check ${it.checked?'on':''}" onclick="toggleShop('${it.id}')"></div><div style="flex:1;min-width:0;"><input style="border:none;background:none;width:100%;padding:0;font-size:14px;font-weight:500;${it.checked?'text-decoration:line-through;color:var(--gris3);':''}" value="${(it.name||'').replace(/"/g,'&quot;')}" oninput="updateShopField('${it.id}','name',this.value)"><input style="border:none;background:none;font-size:12px;color:var(--verde);font-weight:700;padding:0;margin-top:2px;width:100%;" value="${(it.qty||'').replace(/"/g,'&quot;')}" oninput="updateShopField('${it.id}','qty',this.value)"></div><input class="price-input" type="number" inputmode="numeric" placeholder="₡0" value="${it.price||''}" oninput="updateShopPrice('${it.id}',this.value)"><button class="del-btn" onclick="rmShopItem('${it.id}')">×</button></div>`;
+      html+=`<div class="shop-item"><div class="shop-check ${it.checked?'on':''}" onclick="toggleShop('${it.id}')"></div><div style="flex:1;min-width:0;"><input style="border:none;background:none;width:100%;padding:0;font-size:14px;font-weight:500;${it.checked?'text-decoration:line-through;color:var(--gris3);':''}" value="${(it.name||'').replace(/"/g,'&quot;')}" oninput="updateShopField('${it.id}','name',this.value)"><input style="border:none;background:none;font-size:12px;color:var(--verde);font-weight:700;padding:0;margin-top:2px;width:100%;" value="${(it.qty||'').replace(/"/g,'&quot;')}" oninput="updateShopField('${it.id}','qty',this.value)"></div><input class="price-input" type="number" inputmode="numeric" placeholder="₡0" value="${it.price||''}" oninput="updateShopPrice('${it.id}',this.value)"><button class="del-btn" onclick="rmShopItem('${it.id}')">×</button></div><div id="sub_${it.id}" style="font-size:11px;color:var(--gris3);text-align:right;padding:0 52px 8px 0;background:white;${qtyMult(it.qty)>1&&(parseFloat(it.price)||0)>0?'':'display:none;'}">${qtyMult(it.qty)>1&&(parseFloat(it.price)||0)>0?`${qtyMult(it.qty)} × ${fmtColon(parseFloat(it.price)||0)} = <b style="color:var(--verde);">${fmtColon(lineTotal(it))}</b>`:''}</div>`;
     }
   });
   document.getElementById('shopList').innerHTML=html;
@@ -1038,10 +1040,12 @@ async function toggleShop(id){
 }
 function updateShopField(id,field,val){
   const it=ST.shop.find(x=>x.id===id);it[field]=val;
-  debounceSave(id,()=>sb.from('shop_items').update({[field]:val}).eq('id',id));
+  if(field==='qty')updateLineSubtotal(id);
+  debounceSave(id,()=>{sb.from('shop_items').update({[field]:val}).eq('id',id);if(field==='qty'&&document.getElementById('ap-presupuesto').classList.contains('active'))renderBudget();});
 }
 function updateShopPrice(id,val){
   const it=ST.shop.find(x=>x.id===id);it.price=parseFloat(val)||0;
+  updateLineSubtotal(id);
   debounceSave(id,()=>{sb.from('shop_items').update({price:it.price}).eq('id',id);if(document.getElementById('ap-presupuesto').classList.contains('active'))renderBudget();});
 }
 function updateCatName(id,val){
@@ -1181,10 +1185,10 @@ function addShopProduct(){
 async function chooseCat(catId){
   const idx=ST.shop.findIndex(x=>x.id===catId);
   let end=idx+1;while(end<ST.shop.length&&!ST.shop[end].is_category)end++;
-  const sortOrder=(ST.shop[end-1]?.sort_order||idx)+1;
+  const sortOrder=(ST.shop[end-1]?.sort_order||ST.shop[idx]?.sort_order||idx)+1;
   closeModal('assignModal');
-  const {data,error}=await sb.from('shop_items').insert({family_id:ST.family.id,is_category:false,name:'Nuevo producto',qty:'1 unidad',price:0,checked:false,sort_order:sortOrder}).select().maybeSingle();
-  if(error){toast('Error');return;}
+  const {error}=await sb.from('shop_items').insert({family_id:ST.family.id,is_category:false,cat_name:null,name:'Nuevo producto',qty:'1 unidad',price:0,checked:false,sort_order:sortOrder});
+  if(error){toast('Error: '+error.message);return;}
   await loadShop();renderShop();toast('✅ Producto agregado');
 }
 async function createCat(){
@@ -1205,13 +1209,30 @@ async function createCat(){
 // ═══════════════════════════════════════════════════════════════
 // BUDGET
 // ═══════════════════════════════════════════════════════════════
+function qtyMult(qty){
+  // Si la cantidad es "×5" multiplica por 5; cualquier otra cosa cuenta como 1
+  const m=String(qty||'').match(/^\s*[x×*]\s*(\d+)\s*$/i);
+  return m?parseInt(m[1],10):1;
+}
+function lineTotal(it){ return (parseFloat(it.price)||0)*qtyMult(it.qty); }
+function updateLineSubtotal(id){
+  // Refresh just the live subtotal without re-rendering inputs (so el teclado no se cierra)
+  const it=ST.shop.find(x=>x.id===id);
+  if(!it)return;
+  const wrap=document.getElementById('sub_'+id);
+  if(!wrap)return;
+  if(qtyMult(it.qty)>1&&(parseFloat(it.price)||0)>0){
+    wrap.innerHTML=`${qtyMult(it.qty)} × ${fmtColon(parseFloat(it.price)||0)} = <b style="color:var(--verde);">${fmtColon(lineTotal(it))}</b>`;
+    wrap.style.display='block';
+  } else { wrap.style.display='none'; }
+}
 function renderBudget(){
-  const total=ST.shop.filter(x=>!x.is_category).reduce((s,x)=>s+(parseFloat(x.price)||0),0);
+  const total=ST.shop.filter(x=>!x.is_category).reduce((s,x)=>s+lineTotal(x),0);
   const n=ST.members.length||1;
   document.getElementById('budgetTotal').textContent=fmtColon(total);
   document.getElementById('budgetPpl').textContent=`para ${n} persona${n>1?'s':''}`;
   let cats=[],cur=null;
-  ST.shop.forEach(it=>{if(it.is_category){cur={name:it.cat_name,total:0};cats.push(cur);}else if(cur){cur.total+=(parseFloat(it.price)||0);}});
+  ST.shop.forEach(it=>{if(it.is_category){cur={name:it.cat_name,total:0};cats.push(cur);}else if(cur){cur.total+=lineTotal(it);}});
   document.getElementById('budgetBreakdown').innerHTML=cats.length?cats.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid var(--gris2);"><span style="font-size:14px;font-weight:600;">${c.name}</span><span style="font-size:14px;font-weight:700;color:var(--verde);">${fmtColon(c.total)}</span></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--gris3);font-size:13px;">Ingresá precios en Compras</div>';
   document.getElementById('budgetPerPerson').innerHTML=ST.members.length?ST.members.map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid var(--gris2);"><span style="font-size:14px;"><span style="margin-right:8px;">${m.emoji}</span>${m.name}</span><span style="font-size:14px;font-weight:700;color:var(--verde);">${fmtColon(total/n)}</span></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--gris3);font-size:13px;">Agregá miembros</div>';
 }
