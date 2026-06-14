@@ -1078,7 +1078,12 @@ async function createCat(){
   if(!name){toast('Escribí el nombre');return;}
   closeModal('assignModal');
   const maxOrder=Math.max(0,...ST.shop.map(x=>x.sort_order||0));
-  const {error}=await sb.from('shop_items').insert([{family_id:ST.family.id,is_category:true,cat_name:name,sort_order:maxOrder+1},{family_id:ST.family.id,is_category:false,name:'Nuevo producto',qty:'1 unidad',price:0,sort_order:maxOrder+2}]);
+  // Ambos objetos deben tener exactamente las mismas columnas (PostgREST lo exige)
+  const rows=[
+    {family_id:ST.family.id,is_category:true,cat_name:name,name:null,qty:null,price:0,checked:false,sort_order:maxOrder+1},
+    {family_id:ST.family.id,is_category:false,cat_name:null,name:'Nuevo producto',qty:'1 unidad',price:0,checked:false,sort_order:maxOrder+2}
+  ];
+  const {error}=await sb.from('shop_items').insert(rows);
   if(error){toast('Error: '+error.message);return;}
   await loadShop();renderShop();toast('✅ Categoría creada');
 }
