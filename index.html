@@ -336,6 +336,9 @@ window.addEventListener('error', function(ev){
       <h1>🛒 Compras</h1>
       <div class="hsub" id="comprasSub">Lista compartida de la familia</div>
     </div>
+    <div style="margin:14px 14px 0;">
+      <button class="btn btn-ghost" onclick="openGenShop()">📋 Generar compras del menú</button>
+    </div>
     <div id="shopList"></div>
     <button class="fab" onclick="addShopProduct()">+</button>
   </div>
@@ -393,6 +396,10 @@ window.addEventListener('error', function(ev){
 </div>
 <div class="modal-bg" id="genModal" onclick="bgClose(event,'genModal')">
   <div class="modal"><div class="modal-head amarillo"><h2>✨ Generar menú</h2><button class="modal-x" onclick="closeModal('genModal')">✕</button></div><div class="modal-body" id="genBody"></div></div>
+</div>
+
+<div class="modal-bg" id="genShopModal" onclick="bgClose(event,'genShopModal')">
+  <div class="modal"><div class="modal-head rojo"><h2>📋 Generar compras del menú</h2><button class="modal-x" onclick="closeModal('genShopModal')">✕</button></div><div class="modal-body" id="genShopBody"></div></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1053,6 +1060,113 @@ async function rmCat(id){
   const toDelete=ST.shop.slice(idx,end).map(x=>x.id);
   await sb.from('shop_items').delete().in('id',toDelete);
   await loadShop();renderShop();if(document.getElementById('ap-presupuesto').classList.contains('active'))renderBudget();
+}
+
+function openGenShop(){
+  // Default range: today to +7 days
+  const today=new Date();
+  const in7=new Date(); in7.setDate(in7.getDate()+6);
+  const html=`
+    <div class="gen-banner" style="background:linear-gradient(135deg,var(--rojo-bg),var(--amarillo-bg));border-color:var(--rojo);">
+      <h3 style="color:var(--rojo-osc);">📋 Lista desde tu menú</h3>
+      <p>Junto todos los ingredientes de las recetas que pusiste en el calendario, en el rango de fechas que elijas.</p>
+    </div>
+    <div class="mlabel">Desde</div>
+    <input class="inp" type="date" id="genFrom" value="${ymd(today)}">
+    <div class="mlabel" style="margin-top:12px;">Hasta</div>
+    <input class="inp" type="date" id="genTo" value="${ymd(in7)}">
+    <div style="display:flex;gap:8px;margin:14px 0;">
+      <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="setGenRange('semana')">Esta semana</button>
+      <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="setGenRange('mes')">Este mes</button>
+    </div>
+    <label class="opt-card selected" id="genMergeOpt" onclick="toggleGenMerge(this)" style="cursor:pointer;">
+      <span class="oico">🔢</span>
+      <div class="otxt"><h4>Juntar repetidos</h4><p>Si una receta va varios días, agrupa los ingredientes con ×2, ×3...</p></div>
+      <div class="ocheck"></div>
+    </label>
+    <button class="btn btn-primary" style="margin-top:16px;" onclick="generateShopFromMenu()">🛒 Generar lista</button>
+    <p class="helper" style="text-align:center;">Se agregan en una categoría "📋 Del menú". Podés editarlos y ponerles precio.</p>`;
+  document.getElementById('genShopBody').innerHTML=html;
+  window.__genMerge=true;
+  openModal('genShopModal');
+}
+
+function setGenRange(tipo){
+  const today=new Date();
+  if(tipo==='semana'){
+    // Monday to Sunday of current week
+    const day=today.getDay(); // 0=dom
+    const monday=new Date(today); monday.setDate(today.getDate()-(day===0?6:day-1));
+    const sunday=new Date(monday); sunday.setDate(monday.getDate()+6);
+    document.getElementById('genFrom').value=ymd(monday);
+    document.getElementById('genTo').value=ymd(sunday);
+  } else {
+    const first=new Date(today.getFullYear(),today.getMonth(),1);
+    const last=new Date(today.getFullYear(),today.getMonth()+1,0);
+    document.getElementById('genFrom').value=ymd(first);
+    document.getElementById('genTo').value=ymd(last);
+  }
+}
+
+function toggleGenMerge(el){
+  window.__genMerge=!window.__genMerge;
+  el.classList.toggle('selected',window.__genMerge);
+}
+
+async function generateShopFromMenu(){
+  const from=document.getElementById('genFrom').value;
+  const to=document.getElementById('genTo').value;
+  if(!from||!to){toast('Elegí las fechas');return;}
+  if(from>to){toast('La fecha "desde" debe ser antes que "hasta"');return;}
+  const merge=window.__genMerge!==false;
+
+  // Collect all recipe ingredients in the date range
+  const counts={};       // ingredient -> count
+  const order=[];        // keep first-seen order
+  let recipesFound=0;
+  Object.keys(ST.plan).forEach(date=>{
+    if(date<from||date>to) return;
+    const slots=ST.plan[date];
+    ['desayuno','almuerzo','cena'].forEach(slot=>{
+      const entry=slots[slot];
+      if(!entry) return;
+      const r=findRecipe(entry.recipe_id);
+      if(!r||!r.ingr) return;
+      recipesFound++;
+      r.ingr.forEach(ing=>{
+        const key=(ing||'').trim();
+        if(!key||key==='—') return;
+        if(!(key in counts)){ counts[key]=0; order.push(key); }
+        counts[key]++;
+      });
+    });
+  });
+
+  if(recipesFound===0){
+    toast('No hay recetas en el menú de esas fechas');
+    return;
+  }
+  if(order.length===0){
+    toast('Las recetas del menú no tienen ingredientes');
+    return;
+  }
+
+  closeModal('genShopModal');
+  toast('Generando lista...');
+
+  // Build rows: a category header + one item per unique ingredient
+  const maxOrder=Math.max(0,...ST.shop.map(x=>x.sort_order||0));
+  let so=maxOrder+1;
+  const rows=[{family_id:ST.family.id,is_category:true,cat_name:'📋 Del menú',name:null,qty:null,price:0,checked:false,sort_order:so++}];
+  order.forEach(ing=>{
+    const qty = (merge && counts[ing]>1) ? ('×'+counts[ing]) : '1';
+    rows.push({family_id:ST.family.id,is_category:false,cat_name:null,name:ing,qty:qty,price:0,checked:false,sort_order:so++});
+  });
+
+  const {error}=await sb.from('shop_items').insert(rows);
+  if(error){toast('Error: '+error.message);return;}
+  await loadShop();renderShop();
+  toast('✅ '+order.length+' ingredientes agregados');
 }
 
 function addShopProduct(){
